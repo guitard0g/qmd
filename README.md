@@ -2,7 +2,7 @@
 
 An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—all running locally via node-llama-cpp with GGUF models.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—running locally via node-llama-cpp with GGUF models (or optionally via OpenRouter).
 
 ## Quick Start
 
@@ -216,6 +216,46 @@ QMD uses three local GGUF models (auto-downloaded on first use):
 | `Qwen3-1.7B-Q8_0` | Query expansion | ~2.2GB |
 
 Models are downloaded from HuggingFace and cached in `~/.cache/qmd/models/`.
+
+### Optional: OpenRouter (Remote LLMs)
+
+QMD can use OpenRouter instead of local GGUF models for embeddings, query expansion, and reranking.
+
+By default QMD uses local GGUF models; set `QMD_LLM_BACKEND` to opt into OpenRouter.
+
+```sh
+# Prefer OpenRouter when an API key is available
+export QMD_LLM_BACKEND=auto
+
+# Or force OpenRouter explicitly
+export QMD_LLM_BACKEND=openrouter
+```
+
+Provide your API key via one of:
+
+- `OPENROUTER_API_KEY` (env var)
+- `OPENROUTER_API_KEY_PATH` (path to a key file)
+- `.openrouter-api-key` in your current directory
+- `~/.config/qmd/openrouter-api-key`
+
+To force local-only behavior, set `QMD_LLM_BACKEND=llama`.
+
+Default OpenRouter models:
+
+- Embeddings: `openai/text-embedding-3-small`
+- Query expansion: `openai/gpt-4o-mini`
+- Reranking: embeddings-based by default (uses the embedding model)
+
+Override with:
+
+```sh
+export QMD_OPENROUTER_EMBED_MODEL="openai/text-embedding-3-small"
+export QMD_OPENROUTER_GENERATE_MODEL="openai/gpt-4o-mini"
+export QMD_OPENROUTER_RERANK_MODEL="openai/gpt-4o-mini"
+export QMD_OPENROUTER_RERANK_MODE="embeddings" # or "chat"
+```
+
+If you switch embedding models or backends, re-run `qmd embed` to rebuild the vector index.
 
 ## Installation
 
@@ -438,6 +478,14 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
+| `QMD_LLM_BACKEND` | `llama` | LLM backend: `llama`, `openrouter`, or `auto` |
+| `OPENROUTER_API_KEY` | (unset) | OpenRouter API key |
+| `OPENROUTER_API_KEY_PATH` | (unset) | Path to a file containing the API key |
+| `QMD_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
+| `QMD_OPENROUTER_EMBED_MODEL` | `openai/text-embedding-3-small` | OpenRouter embedding model |
+| `QMD_OPENROUTER_GENERATE_MODEL` | `openai/gpt-4o-mini` | OpenRouter model for query expansion |
+| `QMD_OPENROUTER_RERANK_MODEL` | `openai/gpt-4o-mini` | OpenRouter rerank model (when `QMD_OPENROUTER_RERANK_MODE=chat`) |
+| `QMD_OPENROUTER_RERANK_MODE` | `embeddings` | Rerank mode: `embeddings` or `chat` |
 
 ## How It Works
 
@@ -510,13 +558,20 @@ Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
 
 ## Model Configuration
 
-Models are configured in `src/llm.ts` as HuggingFace URIs:
+Models are configured in `src/llm.ts`.
+
+Local GGUF defaults (node-llama-cpp):
 
 ```typescript
-const DEFAULT_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
-const DEFAULT_GENERATE_MODEL = "hf:ggml-org/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf";
+const DEFAULT_EMBED_MODEL_URI = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+const DEFAULT_RERANK_MODEL_URI = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
+const DEFAULT_GENERATE_MODEL_URI = "hf:ggml-org/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf";
 ```
+
+OpenRouter defaults (when `QMD_LLM_BACKEND=openrouter` or auto with a key):
+
+- `openai/text-embedding-3-small`
+- `openai/gpt-4o-mini` (query expansion + reranking)
 
 ### EmbeddingGemma Prompt Format
 

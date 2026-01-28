@@ -16,8 +16,8 @@ import { Glob } from "bun";
 import { realpathSync } from "node:fs";
 import * as sqliteVec from "sqlite-vec";
 import {
-  LlamaCpp,
-  getDefaultLlamaCpp,
+  getDefaultLLM,
+  getDefaultModelConfig,
   formatQueryForEmbedding,
   formatDocForEmbedding,
   type RerankDocument,
@@ -42,9 +42,10 @@ import {
 // =============================================================================
 
 const HOME = Bun.env.HOME || "/tmp";
-export const DEFAULT_EMBED_MODEL = "embeddinggemma";
-export const DEFAULT_RERANK_MODEL = "ExpedientFalcon/qwen3-reranker:0.6b-q8_0";
-export const DEFAULT_QUERY_MODEL = "Qwen/Qwen3-1.7B";
+const DEFAULT_MODELS = getDefaultModelConfig();
+export const DEFAULT_EMBED_MODEL = DEFAULT_MODELS.embedModel;
+export const DEFAULT_RERANK_MODEL = DEFAULT_MODELS.rerankModel;
+export const DEFAULT_QUERY_MODEL = DEFAULT_MODELS.queryModel;
 export const DEFAULT_GLOB = "**/*.md";
 export const DEFAULT_MULTI_GET_MAX_BYTES = 10 * 1024; // 10KB
 
@@ -1248,7 +1249,20 @@ export async function chunkDocumentByTokens(
   maxTokens: number = CHUNK_SIZE_TOKENS,
   overlapTokens: number = CHUNK_OVERLAP_TOKENS
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  const llm = getDefaultLlamaCpp();
+  const llm = getDefaultLLM();
+
+  if (!llm.tokenize || !llm.detokenize) {
+    const fallbackChunks = chunkDocument(
+      content,
+      maxTokens * 4,
+      overlapTokens * 4
+    );
+    return fallbackChunks.map(chunk => ({
+      text: chunk.text,
+      pos: chunk.pos,
+      tokens: Math.max(1, Math.ceil(chunk.text.length / 4)),
+    }));
+  }
 
   // Tokenize once upfront
   const allTokens = await llm.tokenize(content);
@@ -1991,7 +2005,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
 // =============================================================================
 
 async function getEmbedding(text: string, model: string, isQuery: boolean): Promise<number[] | null> {
-  const llm = getDefaultLlamaCpp();
+  const llm = getDefaultLLM();
   // Format text using the appropriate prompt template
   const formattedText = isQuery ? formatQueryForEmbedding(text) : formatDocForEmbedding(text);
   const result = await llm.embed(formattedText, { model, isQuery });
@@ -2056,9 +2070,9 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     return [query, ...lines.slice(0, 2)];
   }
 
-  const llm = getDefaultLlamaCpp();
-  // Note: LlamaCpp uses hardcoded model, model parameter is ignored
-  const results = await llm.expandQuery(query);
+  const llm = getDefaultLLM();
+  // Note: backend may ignore model override depending on implementation
+  const results = await llm.expandQuery(query, { model });
   const queryTexts = results.map(r => r.text);
 
   // Cache the expanded queries (excluding original)
@@ -2089,9 +2103,9 @@ export async function rerank(query: string, documents: { file: string; text: str
     }
   }
 
-  // Rerank uncached documents using LlamaCpp
+  // Rerank uncached documents using the configured LLM backend
   if (uncachedDocs.length > 0) {
-    const llm = getDefaultLlamaCpp();
+    const llm = getDefaultLLM();
     const rerankResult = await llm.rerank(query, uncachedDocs, { model });
 
     // Cache results
