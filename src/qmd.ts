@@ -373,7 +373,7 @@ async function updateCollections(): Promise<void> {
   const db = getDb();
   // Collections are defined in YAML; no duplicate cleanup needed.
 
-  // Clear Ollama cache on update
+  // Clear LLM cache on update
   clearCache(db);
 
   const collections = listCollections(db);
@@ -1357,7 +1357,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const now = new Date().toISOString();
   const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
 
-  // Clear Ollama cache on index
+  // Clear LLM cache on index
   clearCache(db);
 
   // Collection name must be provided (from YAML)
@@ -1994,10 +1994,8 @@ async function vectorSearch(query: string, opts: OutputOptions, model: string = 
   const perQueryLimit = opts.all ? 500 : 20;
   const allResults = new Map<string, { file: string; displayPath: string; title: string; body: string; score: number; hash: string }>();
 
-  // IMPORTANT: Run vector searches sequentially, not with Promise.all.
-  // node-llama-cpp's embedding context hangs when multiple concurrent embed() calls
-  // are made. This is a known limitation of the LlamaEmbeddingContext.
-  // See: https://github.com/tobi/qmd/pull/23
+  // IMPORTANT: Run vector searches sequentially to avoid overloading the embedding backend
+  // and to keep caching behavior predictable.
   for (const q of vectorQueries) {
     const vecResults = await searchVec(db, q, model, perQueryLimit, collectionName as any);
     for (const r of vecResults) {

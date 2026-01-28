@@ -2,7 +2,7 @@
  * MCP Server Tests
  *
  * Tests all MCP tools, resources, and prompts.
- * Uses mocked Ollama responses and a test database.
+ * Uses mocked LLM responses and a test database.
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite";
 import * as sqliteVec from "sqlite-vec";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getDefaultLlamaCpp, disposeDefaultLlamaCpp } from "./llm";
+import { setDefaultLLM, type LLM, type Queryable, type RerankDocument } from "./llm";
 import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -25,9 +25,61 @@ let testDb: Database;
 let testDbPath: string;
 let testConfigDir: string;
 
-afterAll(async () => {
-  // Ensure native resources are released to avoid ggml-metal asserts on process exit.
-  await disposeDefaultLlamaCpp();
+class MockLLM implements LLM {
+  async embed(text: string): Promise<{ embedding: number[]; model: string }> {
+    return { embedding: makeEmbedding(text), model: "mock-embed" };
+  }
+
+  async embedBatch(texts: string[]): Promise<{ embedding: number[]; model: string }[]> {
+    return texts.map(text => ({ embedding: makeEmbedding(text), model: "mock-embed" }));
+  }
+
+  async generate(prompt: string): Promise<{ text: string; model: string; done: boolean }> {
+    return { text: `mock:${prompt}`, model: "mock-gen", done: true };
+  }
+
+  async modelExists(model: string): Promise<{ name: string; exists: boolean }> {
+    return { name: model, exists: true };
+  }
+
+  async expandQuery(query: string, options: { includeLexical?: boolean } = {}): Promise<Queryable[]> {
+    const includeLexical = options.includeLexical ?? true;
+    const results: Queryable[] = [];
+    if (includeLexical) results.push({ type: "lex", text: query });
+    results.push({ type: "vec", text: `${query} semantic` });
+    results.push({ type: "hyde", text: `Hypothetical document about ${query}` });
+    return results;
+  }
+
+  async rerank(query: string, documents: RerankDocument[]): Promise<{ results: { file: string; score: number; index: number }[]; model: string }> {
+    const lower = query.toLowerCase();
+    const results = documents.map((doc, index) => ({
+      file: doc.file,
+      index,
+      score: doc.text.toLowerCase().includes(lower) ? 0.9 : 0.1,
+    })).sort((a, b) => b.score - a.score);
+    return { results, model: "mock-rerank" };
+  }
+
+  async dispose(): Promise<void> {}
+}
+
+function makeEmbedding(text: string): number[] {
+  const size = 768;
+  const base = Math.max(1, (text.length % 10) + 1);
+  const embedding = new Array<number>(size);
+  for (let i = 0; i < size; i++) {
+    embedding[i] = (i % base) / base;
+  }
+  return embedding;
+}
+
+const mockLLM = new MockLLM();
+beforeAll(() => {
+  setDefaultLLM(mockLLM);
+});
+afterAll(() => {
+  setDefaultLLM(null);
 });
 
 function initTestDatabase(db: Database): void {
@@ -163,7 +215,7 @@ function seedTestData(db: Database): void {
   for (let i = 0; i < 768; i++) embedding[i] = Math.random();
 
   for (const doc of docs.slice(0, 4)) { // Skip large file for embeddings
-    db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'embeddinggemma', ?)`).run(doc.hash, now);
+    db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'mock-embed', ?)`).run(doc.hash, now);
     db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${doc.hash}_0`, embedding);
   }
 }
@@ -202,10 +254,6 @@ import type { RankedResult } from "./store";
 
 describe("MCP Server", () => {
   beforeAll(async () => {
-    // LlamaCpp uses node-llama-cpp for local model inference (no HTTP mocking needed)
-    // Use shared singleton to avoid creating multiple instances with separate GPU resources
-    getDefaultLlamaCpp();
-
     // Set up test config directory
     const configPrefix = join(tmpdir(), `qmd-mcp-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     testConfigDir = await mkdtemp(configPrefix);

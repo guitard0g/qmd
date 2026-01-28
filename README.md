@@ -2,7 +2,7 @@
 
 An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—running locally via node-llama-cpp with GGUF models (or optionally via OpenRouter).
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—powered by OpenRouter.
 
 ## Quick Start
 
@@ -112,7 +112,7 @@ Although the tool works perfectly fine when you just tell your agent to use it o
                         ▼                             ▼
                ┌────────────────┐            ┌────────────────┐
                │ Query Expansion│            │  Original Query│
-               │   (Qwen3-1.7B) │            │   (×2 weight)  │
+               │ (OpenRouter LLM)│           │   (×2 weight)  │
                └───────┬────────┘            └───────┬────────┘
                        │                             │
                        │ 2 alternative queries       │
@@ -146,7 +146,7 @@ Although the tool works perfectly fine when you just tell your agent to use it o
                                       ▼
                           ┌───────────────────────┐
                           │    LLM Re-ranking     │
-                          │  (qwen3-reranker)     │
+                          │   (OpenRouter LLM)    │
                           │  Yes/No + logprobs    │
                           └───────────┬───────────┘
                                       │
@@ -205,31 +205,9 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
   brew install sqlite
   ```
 
-### GGUF Models (via node-llama-cpp)
+### OpenRouter (default)
 
-QMD uses three local GGUF models (auto-downloaded on first use):
-
-| Model | Purpose | Size |
-|-------|---------|------|
-| `embeddinggemma-300M-Q8_0` | Vector embeddings | ~300MB |
-| `qwen3-reranker-0.6b-q8_0` | Re-ranking | ~640MB |
-| `Qwen3-1.7B-Q8_0` | Query expansion | ~2.2GB |
-
-Models are downloaded from HuggingFace and cached in `~/.cache/qmd/models/`.
-
-### Optional: OpenRouter (Remote LLMs)
-
-QMD can use OpenRouter instead of local GGUF models for embeddings, query expansion, and reranking.
-
-By default QMD uses local GGUF models; set `QMD_LLM_BACKEND` to opt into OpenRouter.
-
-```sh
-# Prefer OpenRouter when an API key is available
-export QMD_LLM_BACKEND=auto
-
-# Or force OpenRouter explicitly
-export QMD_LLM_BACKEND=openrouter
-```
+QMD uses OpenRouter for embeddings, query expansion, and reranking.
 
 Provide your API key via one of:
 
@@ -238,7 +216,7 @@ Provide your API key via one of:
 - `.openrouter-api-key` in your current directory
 - `~/.config/qmd/openrouter-api-key`
 
-To force local-only behavior, set `QMD_LLM_BACKEND=llama`.
+An API key is required for `qmd embed`, `qmd vsearch`, and `qmd query`.
 
 Default OpenRouter models:
 
@@ -255,7 +233,7 @@ export QMD_OPENROUTER_RERANK_MODEL="openai/gpt-4o-mini"
 export QMD_OPENROUTER_RERANK_MODE="embeddings" # or "chat"
 ```
 
-If you switch embedding models or backends, re-run `qmd embed` to rebuild the vector index.
+If you switch embedding models, re-run `qmd embed` to rebuild the vector index.
 
 ## Installation
 
@@ -478,7 +456,6 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
-| `QMD_LLM_BACKEND` | `llama` | LLM backend: `llama`, `openrouter`, or `auto` |
 | `OPENROUTER_API_KEY` | (unset) | OpenRouter API key |
 | `OPENROUTER_API_KEY_PATH` | (unset) | Path to a file containing the API key |
 | `QMD_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
@@ -509,7 +486,7 @@ Collection ──► Glob Pattern ──► Markdown Files ──► Parse Title
 Documents are chunked into 800-token pieces with 15% overlap:
 
 ```
-Document ──► Chunk (800 tokens) ──► Format each chunk ──► node-llama-cpp ──► Store Vectors
+Document ──► Chunk (800 tokens) ──► Format each chunk ──► OpenRouter ──► Store Vectors
                 │                    "title | text"        embedBatch()
                 │
                 └─► Chunks stored with:
@@ -560,20 +537,12 @@ Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
 
 Models are configured in `src/llm.ts`.
 
-Local GGUF defaults (node-llama-cpp):
-
-```typescript
-const DEFAULT_EMBED_MODEL_URI = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-const DEFAULT_RERANK_MODEL_URI = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
-const DEFAULT_GENERATE_MODEL_URI = "hf:ggml-org/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf";
-```
-
-OpenRouter defaults (when `QMD_LLM_BACKEND=openrouter` or auto with a key):
+OpenRouter defaults:
 
 - `openai/text-embedding-3-small`
 - `openai/gpt-4o-mini` (query expansion + reranking)
 
-### EmbeddingGemma Prompt Format
+### Embedding Prompt Format
 
 ```
 // For queries
@@ -583,13 +552,13 @@ OpenRouter defaults (when `QMD_LLM_BACKEND=openrouter` or auto with a key):
 "title: {title} | text: {content}"
 ```
 
-### Qwen3-Reranker
+### Reranking
 
-Uses node-llama-cpp's `createRankingContext()` and `rankAndSort()` API for cross-encoder reranking. Returns documents sorted by relevance score (0.0 - 1.0).
+By default, reranking uses embedding similarity. Set `QMD_OPENROUTER_RERANK_MODE=chat` to use chat-based scoring.
 
-### Qwen3 (Query Expansion)
+### Query Expansion
 
-Used for generating query variations via `LlamaChatSession`.
+Uses OpenRouter chat completions to generate `lex`, `vec`, and `hyde` variants.
 
 ## License
 
